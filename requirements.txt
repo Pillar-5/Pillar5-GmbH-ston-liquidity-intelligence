@@ -1,0 +1,11 @@
+# Core
+httpx>=0.27,<1
+pydantic>=2.0,<3
+
+# REST API + dashboard (optional, `pip install .[api]`)
+fastapi>=0.110,<1
+uvicorn[standard]>=0.29,<1
+
+# Development / tests
+pytest>=8,<9
+pytest-asyncio>=0.23,<1

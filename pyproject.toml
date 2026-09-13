@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ston-liquidity-intelligence"
+version = "0.1.0"
+description = "STON.fi Liquidity & Execution Intelligence Engine - monitor liquidity, evaluate execution quality and identify actionable market conditions across TON."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Pillar5 GmbH" }]
+keywords = ["stonfi", "ton", "defi", "liquidity", "dex", "analytics", "execution"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+dependencies = [
+    "httpx>=0.27,<1",
+    "pydantic>=2.0,<3",
+]
+
+[project.optional-dependencies]
+api = ["fastapi>=0.110,<1", "uvicorn[standard]>=0.29,<1"]
+dev = ["pytest>=8,<9", "pytest-asyncio>=0.23,<1"]
+
+[project.scripts]
+ston-liq = "ston_liquidity_intelligence.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]
