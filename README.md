@@ -27,8 +27,9 @@ This is an early MVP. The current version:
 - stores snapshots and execution samples in SQLite
 - serves the results through a REST API and a dashboard
 
-Historical tracking over time, broader market coverage and additional execution
-analysis are planned for later stages.
+The MVP establishes the collection, simulation and analytics pipeline. The next
+stage will add continuous historical collection, broader market coverage,
+gas-cost analysis and execution comparisons across venues.
 
 ## How it works
 
@@ -96,7 +97,7 @@ Real output from a run against the live STON.fi API (`ston-liq run
 | 127,070 | $127,018.54 | 0.7041164 | 0.73917804 | 0.952567 | 4.7528% | 31.04 |
 
 Larger trades execute at progressively worse effective prices relative to the
-reference trade, which is the expected behaviour for a constant-product pool.
+reference trade in this example.
 
 ## STON.fi integration
 

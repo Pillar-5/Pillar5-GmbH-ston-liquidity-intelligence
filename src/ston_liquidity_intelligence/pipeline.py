@@ -53,6 +53,13 @@ class Market:
     def quote_address(self) -> str:
         return self.quote.contract_address
 
+    @property
+    def base_reserve_raw(self) -> int:
+        """Raw on-chain size of the base-asset reserve in this pool."""
+        if self.pool.token0_address == self.base_address:
+            return int(self.pool.reserve0)
+        return int(self.pool.reserve1)
+
     def base_reserve_human(self) -> float:
         """Human-readable size of the base-asset reserve in this pool."""
         from .analytics import scale_down
@@ -170,16 +177,16 @@ async def evaluate_market(
 
     Returns ``(samples, attempted, succeeded)``.
 
-    The reference price is the effective price of the smallest simulated trade,
-    that is the trade with the lowest price impact in this run. Larger trades
-    are scored relative to it. The reference is reproducible because it is based
-    on actual token units and decimals for that market.
+    The reference price is the effective price of the smallest successfully
+    simulated trade size, which is deterministic and reproducible. Larger
+    trades are scored relative to it. The reference is based on actual token
+    units and decimals for that market.
 
     ``samples`` contains only successful simulations. ``attempted`` and
     ``succeeded`` count the simulations that were attempted and returned
     successfully, so failed simulations are not silently hidden.
     """
-    from .analytics import scale_up
+    from .analytics import reserve_fraction_units, scale_down
 
     base_reserve = market.base_reserve_human()
     if base_reserve <= 0:
@@ -189,8 +196,9 @@ async def evaluate_market(
     succeeded = 0
     metrics: list[ExecutionMetrics] = []
     for fraction in settings.trade_sizes:
-        amount = base_reserve * fraction
-        units = scale_up(amount, market.base.decimals)
+        units = reserve_fraction_units(
+            market.base_reserve_raw, fraction, market.base.decimals
+        )
         if units <= 0:
             continue
         attempted += 1
@@ -209,6 +217,7 @@ async def evaluate_market(
             continue
         succeeded += 1
 
+        amount = scale_down(units, market.base.decimals)
         notional_usd = amount * market.base.price_usd
         metrics.append(
             execution_metrics(

@@ -19,6 +19,7 @@ to the effective execution price, which the simulation already incorporates.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from decimal import ROUND_FLOOR, Decimal
 from typing import Optional
 
 from .models import Asset, Pool, SwapSimulation
@@ -42,6 +43,21 @@ def scale_down(units: int | str, decimals: int) -> float:
 def scale_up(amount: float, decimals: int) -> int:
     """Convert a human-readable amount to raw token units."""
     return int(round(amount * (10 ** decimals)))
+
+
+def reserve_fraction_units(reserve_raw: int | str, fraction: float, decimals: int) -> int:
+    """Trade units for ``fraction`` of a raw pool reserve, computed exactly.
+
+    Works on the raw reserve integer with :class:`~decimal.Decimal` so large
+    reserves and small fractions do not lose precision to float rounding.
+    Rounds down to whole raw units.
+    """
+    try:
+        reserve = Decimal(int(reserve_raw))
+    except (TypeError, ValueError):
+        return 0
+    units = (reserve * Decimal(str(fraction))).to_integral_value(rounding=ROUND_FLOOR)
+    return int(units)
 
 
 def format_bps(fraction: float) -> float:

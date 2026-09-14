@@ -4,7 +4,7 @@ Endpoints
 ---------
 - ``GET  /health``                         - liveness/diagnostics
 - ``GET  /api/summary``                    - overall liquidity & discovery summary
-- ``GET  /api/markets``                    - list monitored markets + latest samples
+- ``GET  /api/markets``                    - list monitored markets, latest run
 - ``GET  /api/markets/{market}/execution`` - execution samples for one market
 - ``GET  /api/snapshots/{type}``           - latest stored raw snapshot
 - ``GET  /``                               - interactive dashboard (HTML)
@@ -100,8 +100,12 @@ load();
 </html>"""
 
 def _markets_view(db: Repository) -> list[dict]:
-    """Summarise the latest sample per market in a dashboard-friendly form."""
-    samples = [dict(r) for r in db.execution_samples(limit=20000)]
+    """Summarise the most recent collection run, one row per market.
+
+    Only samples from the latest ``observed_at`` are used, so the view never
+    mixes observations from different collection runs.
+    """
+    samples = [dict(r) for r in db.latest_run_samples()]
     grouped: dict[str, list[dict]] = {}
     for r in samples:
         grouped.setdefault(r["market"], []).append(r)
@@ -113,6 +117,7 @@ def _markets_view(db: Repository) -> list[dict]:
             {
                 "market": market,
                 "pool_address": rows[0]["pool_address"],
+                "observed_at": rows[0]["observed_at"],
                 "samples": len(rows),
                 "largest_trade_base": largest["trade_size_base"],
                 "largest_notional_usd": largest.get("notional_usd") or 0,
@@ -176,8 +181,14 @@ def create_app(settings: Settings) -> FastAPI:
     def market_execution(
         market: str = Query(..., description="Market name, e.g. USDT/GRAM"),
         limit: int = Query(50, ge=1, le=500),
+        latest: bool = Query(
+            True, description="Only samples from the most recent collection run."
+        ),
     ) -> dict:
-        rows = db.execution_samples(market=market, limit=limit)
+        if latest:
+            rows = db.latest_run_samples(market=market, limit=limit)
+        else:
+            rows = db.execution_samples(market=market, limit=limit)
         return {"market": market, "samples": [dict(r) for r in rows]}
 
     @app.get("/api/snapshots/{type_}")

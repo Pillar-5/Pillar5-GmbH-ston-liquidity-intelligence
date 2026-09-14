@@ -1,5 +1,6 @@
 """Tests for market selection and the pipeline helpers."""
 
+from decimal import ROUND_FLOOR, Decimal
 from pathlib import Path
 
 import pytest
@@ -215,6 +216,61 @@ async def test_failed_simulations_are_counted_and_excluded():
     assert succeeded == 2
     assert len(samples) == 2
     assert all(s["trade_size_base"] < 6.0 for s in samples)
+
+
+@pytest.mark.asyncio
+async def test_reference_is_smallest_trade_even_if_impact_is_lower_elsewhere():
+    """The reference is the smallest trade size, never the lowest reported impact.
+
+    The fake reports a smaller price impact for the large trade than for the
+    small one, so a lowest-impact rule would pick the wrong reference.
+    """
+
+    class AdversarialClient(FakeClient):
+        async def simulate_swap(self, offer_address, ask_address, offer_units, slippage_tolerance, pool_address=None):
+            sim = await super().simulate_swap(
+                offer_address, ask_address, offer_units, slippage_tolerance, pool_address
+            )
+            impact = "0.001" if int(offer_units) < 5_000_000 else "0.000001"
+            return sim.model_copy(update={"price_impact": impact})
+
+    base = _asset("USDT", "EQusdt", 6, price="1.0")
+    quote = _asset("TON", TON, 9, price="2.0")
+    pool = Pool(
+        address="EQp",
+        token0_address="EQusdt",
+        token1_address=TON,
+        reserve0="100000000",
+        reserve1="0",
+        lp_total_supply_usd="200",
+    )
+    market = Market(pool=pool, base=base, quote=quote)
+    settings = Settings(trade_sizes=(0.01, 0.5))
+    samples, _, _ = await evaluate_market(AdversarialClient(), market, settings)
+    smallest = min(samples, key=lambda s: s["trade_size_base"])
+    largest = max(samples, key=lambda s: s["trade_size_base"])
+    # The large trade reports the lower price impact, but the reference must
+    # still come from the smallest trade.
+    assert largest["price_impact"] < smallest["price_impact"]
+    assert smallest["reference_price"] == pytest.approx(smallest["effective_price"])
+    assert largest["reference_price"] == pytest.approx(smallest["effective_price"])
+    assert largest["execution_quality"] == pytest.approx(
+        largest["effective_price"] / smallest["effective_price"]
+    )
+
+
+def test_reserve_fraction_units_is_exact():
+    """Raw-unit trade sizing uses Decimal and rounds down."""
+    from ston_liquidity_intelligence.analytics import reserve_fraction_units
+
+    # A 9-decimal reserve that float rounding would mishandle.
+    reserve = "123456789012345678901"
+    assert reserve_fraction_units(reserve, 0.037, 9) == 4567901193456790119
+    assert reserve_fraction_units(reserve, 0.037, 9) == int(
+        (Decimal(reserve) * Decimal("0.037")).to_integral_value(rounding=ROUND_FLOOR)
+    )
+    assert reserve_fraction_units("bad", 0.5, 9) == 0
+    assert reserve_fraction_units("100", 0.0000001, 9) == 0  # rounds to zero
 
 
 def test_report_markdown_contains_table():

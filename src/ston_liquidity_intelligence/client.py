@@ -84,32 +84,43 @@ class StonApiClient:
         *,
         params: Optional[dict] = None,
     ) -> dict[str, Any]:
-        """Issue a throttled request, retrying transient HTTP errors."""
+        """Issue a throttled request, retrying transient failures.
+
+        Retried: connection errors, timeouts, and the HTTP status codes
+        429, 500, 502, 503 and 504. Other 4xx responses fail immediately.
+        """
         await self.start()
         assert self._client is not None
 
+        retryable = {429, 500, 502, 503, 504}
         last_exc: Optional[Exception] = None
         for attempt in range(self._max_retries + 1):
+            retry_reason: Optional[str] = None
             try:
                 async with self._semaphore:
                     resp = await self._client.request(method, path, params=params)
                 if resp.status_code >= 400:
-                    raise StonApiError(
-                        f"{method} {path} -> HTTP {resp.status_code}: {resp.text[:300]}"
-                    )
-                return resp.json()
+                    detail = f"{method} {path} -> HTTP {resp.status_code}: {resp.text[:300]}"
+                    if resp.status_code in retryable and attempt < self._max_retries:
+                        retry_reason = detail
+                    else:
+                        raise StonApiError(detail)
+                else:
+                    return resp.json()
             except httpx.HTTPError as exc:  # network / timeout / connection errors
                 last_exc = exc
                 if attempt < self._max_retries:
-                    logger.warning(
-                        "request %s %s attempt %d/%d failed: %s",
-                        method,
-                        path,
-                        attempt + 1,
-                        self._max_retries + 1,
-                        exc,
-                    )
-                    await asyncio.sleep(0.5 * (attempt + 1))
+                    retry_reason = str(exc)
+            if retry_reason is not None:
+                logger.warning(
+                    "request %s %s attempt %d/%d failed: %s",
+                    method,
+                    path,
+                    attempt + 1,
+                    self._max_retries + 1,
+                    retry_reason,
+                )
+                await asyncio.sleep(0.5 * (attempt + 1))
 
         raise StonApiError(f"request {method} {path} failed after retries: {last_exc}")
 

@@ -81,6 +81,60 @@ def test_dashboard_html(tmp_path):
     assert "STON.fi" in resp.text
 
 
+def _sample(market="USDT/GRAM", observed_at="2026-01-01T00:00:00Z", trade=1.0, price=2.0):
+    return {
+        "observed_at": observed_at,
+        "market": market,
+        "pool_address": "p",
+        "direction": "sell",
+        "offer_address": "usdt",
+        "ask_address": "ton",
+        "trade_size_base": trade,
+        "notional_usd": trade * 100.0,
+        "offer_amount": trade,
+        "ask_amount": trade * price,
+        "effective_price": price,
+        "reference_price": price,
+        "execution_quality": 1.0,
+        "price_impact": 0.0001,
+        "fee_percent": 0.003,
+        "fee_bps": 30.0,
+        "fee_amount_ask": 0.006,
+    }
+
+
+def test_markets_view_shows_only_latest_run(tmp_path):
+    """The API must not mix samples from different collection runs."""
+    db = Repository(str(tmp_path / "runs.db"))
+    db.store_execution_samples(
+        [_sample(observed_at="2026-01-01T00:00:00Z", trade=1.0, price=2.0)]
+    )
+    db.store_execution_samples(
+        [
+            _sample(observed_at="2026-01-02T00:00:00Z", trade=1.0, price=3.0),
+            _sample(observed_at="2026-01-02T00:00:00Z", trade=5.0, price=3.0),
+        ]
+    )
+    app = create_app(Settings(db_path=str(tmp_path / "runs.db")))
+    client = TestClient(app)
+
+    markets = client.get("/api/markets").json()["markets"]
+    assert len(markets) == 1
+    assert markets[0]["observed_at"] == "2026-01-02T00:00:00Z"
+    assert markets[0]["samples"] == 2
+
+    ex = client.get("/api/execution", params={"market": "USDT/GRAM"}).json()
+    assert len(ex["samples"]) == 2
+    assert all(s["observed_at"] == "2026-01-02T00:00:00Z" for s in ex["samples"])
+
+    # Historical samples stay available on request.
+    hist = client.get(
+        "/api/execution", params={"market": "USDT/GRAM", "latest": "false"}
+    ).json()
+    assert len(hist["samples"]) == 3
+    assert db.close() is None
+
+
 def test_empty_db_raises_404(tmp_path):
     Repository(str(tmp_path / "empty.db"))
     app = create_app(Settings(db_path=str(tmp_path / "empty.db")))

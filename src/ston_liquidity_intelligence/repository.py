@@ -220,6 +220,36 @@ class Repository:
                 ).fetchall()
         return rows
 
+    def latest_run_samples(
+        self,
+        market: Optional[str] = None,
+        limit: int = 20000,
+    ) -> list[sqlite3.Row]:
+        """Execution samples from the most recent collection run only."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT MAX(observed_at) AS latest FROM execution_samples"
+            ).fetchone()
+            if row is None or row["latest"] is None:
+                return []
+            if market:
+                rows = self._conn.execute(
+                    """
+                    SELECT * FROM execution_samples
+                    WHERE observed_at = ? AND market = ? ORDER BY trade_size_base ASC
+                    """,
+                    (row["latest"], market),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT * FROM execution_samples
+                    WHERE observed_at = ? ORDER BY market, trade_size_base ASC
+                    """,
+                    (row["latest"],),
+                ).fetchall()
+        return rows[:limit]
+
     def close(self) -> None:
         self._conn.close()
 
