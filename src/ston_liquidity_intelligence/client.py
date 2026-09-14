@@ -1,14 +1,17 @@
 """Async client for the STON.fi public HTTP API.
 
-Implements the subset of endpoints used by the intelligence engine:
+Implements the subset of endpoints used by the project:
 
 - ``GET /v1/assets``            - discover DEX assets
-- ``GET /v1/routers``           - discover supported routers
-- ``GET /v1/pools``             - retrieve pool / liquidity information
-- ``POST /v1/swap/simulate``    - simulate a swap to measure execution quality
+- ``GET /v1/routers``           - list supported routers (v1 by default)
+- ``GET /v1/pools``             - list pools and liquidity (v1 by default)
+- ``POST /v1/swap/simulate``    - simulate a swap (expected output, fees, gas)
 
-The full endpoint catalogue is documented in the official ``@ston-fi/api``
-TypeScript client (https://github.com/ston-fi/api), which this module mirrors.
+The client targets the legacy v1 DEX infrastructure explicitly. STON.fi's API
+splits v1 and v2 data behind the ``dex_v2`` filter, so ``dex_v2=false`` is sent
+for routers and pools to keep the market universe deterministic. See the
+official ``@ston-fi/api`` TypeScript client (https://github.com/ston-fi/api)
+for the full endpoint catalogue.
 """
 
 from __future__ import annotations
@@ -120,13 +123,22 @@ class StonApiClient:
         return Asset.model_validate(data["asset"])
 
     # ---------------------------------------------------------------- routers
-    async def get_routers(self) -> list[Router]:
-        data = await self._request("GET", "/v1/routers")
+    async def get_routers(self, dex_v2: bool = False) -> list[Router]:
+        """List supported routers.
+
+        By default only the legacy v1 routers are requested. STON.fi's API does
+        not return a single dataset for both DEX generations, so this project
+        targets the v1 constant-product infrastructure explicitly and passes
+        ``dex_v2=false``. Setting ``dex_v2=True`` switches to the combined
+        (v1 + v2) list.
+        """
+        data = await self._request("GET", "/v1/routers", params={"dex_v2": "true" if dex_v2 else "false"})
         return [Router.model_validate(r) for r in data.get("router_list", [])]
 
     # ------------------------------------------------------------------- pools
-    async def get_pools(self) -> list[Pool]:
-        data = await self._request("GET", "/v1/pools")
+    async def get_pools(self, dex_v2: bool = False) -> list[Pool]:
+        """List liquidity pools (v1 only by default, see :meth:`get_routers`)."""
+        data = await self._request("GET", "/v1/pools", params={"dex_v2": "true" if dex_v2 else "false"})
         return [Pool.model_validate(p) for p in data.get("pool_list", [])]
 
     async def get_pool(self, pool_address: str) -> Pool:

@@ -1,12 +1,19 @@
-"""Analytics for liquidity and execution quality.
+"""Analytics for liquidity and execution conditions.
 
 Metrics produced by this module:
-- Human-readable token amounts and effective (virtual) execution price
-- Price impact reported by a swap simulation (as a fraction)
-- Fee / estimated execution cost (in bps and native/quote units)
-- Execution quality, i.e. the effective price of a given trade relative to the
-  low-impact reference price of the smallest simulated trade
+
+- Token amounts converted to human-readable units using token decimals
+- Effective execution price, that is the simulated output ratio ask / offer
+- Price impact reported by the swap simulation (as a fraction)
+- Fee percent, fee in basis points, and fee amount in the ask token
+- Execution quality, that is a trade's effective price relative to the
+  reference price of the smallest simulated trade
+- Gas estimates reported by the simulation
 - Liquidity indicators extracted from pool data
+
+The metrics come from the STON.fi simulation outputs wherever possible. Values
+such as the pool fee and price impact are reported separately and are not added
+to the effective execution price, which the simulation already incorporates.
 """
 
 from __future__ import annotations
@@ -44,13 +51,36 @@ def format_bps(fraction: float) -> float:
 
 @dataclass
 class ExecutionMetrics:
-    """Refined execution metrics for a single simulated swap."""
+    """Refined execution metrics for a single simulated swap.
+
+    ``effective_price`` is the quoted execution price, that is the actual output
+    ratio ``ask_amount / offer_amount`` returned by the simulation. It already
+    reflects the pool fee and the price impact for that trade size.
+
+    The fee and price impact are reported separately as derived metrics. They
+    are not added to ``effective_price`` because the simulation output already
+    incorporates them. Fees are therefore not double counted, and
+    ``effective_price`` is not a synthetic figure built from assumptions.
+    """
 
     market: str
     pool_address: str
     direction: str
     offer_address: str
     ask_address: str
+    # raw inputs for reproducibility
+    offer_units_raw: str
+    ask_units_raw: str
+    offer_decimals: int
+    ask_decimals: int
+    min_ask_units: Optional[str]
+    swap_rate: Optional[float]
+    slippage_tolerance: Optional[float]
+    fee_units_raw: Optional[str]
+    fee_address: Optional[str]
+    gas_forward: Optional[float]
+    gas_consumption: Optional[float]
+    # derived metrics
     offer_amount: float
     ask_amount: float
     trade_size_base: float
@@ -59,6 +89,9 @@ class ExecutionMetrics:
     execution_quality: Optional[float]
     price_impact: float
     fee_percent: float
+    """Fee as a fraction of the trade, as returned by the simulation response
+    field ``fee_percent``. Despite the field name it is a fraction, for example
+    0.003004 for roughly 30 bps."""
     fee_bps: float
     fee_amount_ask: float
     notional_usd: float
@@ -75,20 +108,29 @@ def execution_metrics(
     reference_price: Optional[float] = None,
     notional_usd: float = 0.0,
 ) -> ExecutionMetrics:
-    """Derive refined execution metrics from a raw swap simulation.
+    """Derive execution metrics from a raw swap simulation.
 
-    ``effective_price`` is expressed in units of ask token per offer token.
-    ``execution_quality`` (when a reference price is supplied) is the ratio of
-    this trade's effective price to the reference price; values below 1.0 mean
-    the trade executes worse than the low-impact reference.
+    ``effective_price`` is quoted as ask token units per offer token unit. It is
+    computed from the simulated output amounts only.
+
+    ``execution_quality`` is only meaningful when a ``reference_price`` is
+    supplied. It is the ratio of this trade's effective price to that
+    reference. For a sell direction, a value below 1.0 means the trade is worse
+    than the reference (higher price impact for the larger trade).
     """
-    offer_amount = scale_down(sim.offer_units, offer_asset.decimals)
-    ask_amount = scale_down(sim.ask_units, ask_asset.decimals)
+    offer_decimals = offer_asset.decimals
+    ask_decimals = ask_asset.decimals
+    offer_amount = scale_down(sim.offer_units, offer_decimals)
+    ask_amount = scale_down(sim.ask_units, ask_decimals)
     effective_price = ask_amount / offer_amount if offer_amount else 0.0
 
     price_impact = sim.price_impact_value
     fee_percent = sim.fee_percent_value
-    fee_amount_ask = scale_down(sim.fee_units, ask_asset.decimals) if sim.fee_units else 0.0
+    fee_amount_ask = scale_down(sim.fee_units, ask_decimals) if sim.fee_units else 0.0
+
+    gas = sim.gas_params or {}
+    gas_forward = _safe_float(gas.get("forward_gas"))
+    gas_consumption = _safe_float(gas.get("estimated_gas_consumption"))
 
     return ExecutionMetrics(
         market=f"{offer_asset.symbol}/{ask_asset.symbol}",
@@ -96,6 +138,17 @@ def execution_metrics(
         direction="sell",
         offer_address=offer_asset.contract_address,
         ask_address=ask_asset.contract_address,
+        offer_units_raw=sim.offer_units,
+        ask_units_raw=sim.ask_units,
+        offer_decimals=offer_decimals,
+        ask_decimals=ask_decimals,
+        min_ask_units=sim.min_ask_units,
+        swap_rate=sim.float_field("swap_rate") or None,
+        slippage_tolerance=_safe_float(sim.slippage_tolerance),
+        fee_units_raw=sim.fee_units,
+        fee_address=sim.fee_address,
+        gas_forward=gas_forward or None,
+        gas_consumption=gas_consumption or None,
         offer_amount=offer_amount,
         ask_amount=ask_amount,
         trade_size_base=offer_amount,
@@ -125,6 +178,8 @@ class LiquidityMetrics:
     reserve0: float
     reserve1: float
     tvl_usd: float
+    """LP supply value in USD as reported by the STON.fi API
+    (``lp_total_supply_usd``). This is a liquidity proxy, not a canonical TVL."""
     volume_24h_usd: float
     lp_fee_bps: float
     protocol_fee_bps: float

@@ -1,9 +1,9 @@
-"""Data pipeline: discover -> collect -> simulate -> analyse -> report.
+"""Data pipeline: discover, collect, simulate, analyse and report.
 
 High-level flow of a ``run``:
 
 1. ``collect_market_data``  - pull assets, routers and pools from STON.fi
-2. ``choose_markets``       - select a bounded, liquid universe of TON pairs
+2. ``choose_markets``       - select a bounded set of liquid TON pairs
 3. ``evaluate_markets``     - simulate swaps across trade sizes and score them
 4. ``store_and_report``     - persist samples and produce a JSON/Markdown report
 """
@@ -154,7 +154,7 @@ def choose_markets(
     selected = candidates[: settings.max_pools]
     logger.info("selected %d liquid markets (of %d candidates)", len(selected), len(candidates))
     for m in selected:
-        logger.info("  market %-28s tvl=%12.2f USD", m.name, m.tvl_usd())
+        logger.info("  market %-28s liq=%12.2f USD", m.name, m.tvl_usd())
     return selected
 ###############################################################################
 # Execution simulations
@@ -165,24 +165,35 @@ async def evaluate_market(
     client: StonApiClient,
     market: Market,
     settings: Settings,
-) -> list[dict]:
+) -> tuple[list[dict], int, int]:
     """Simulate selling increasing fractions of the base reserve for TON.
 
-    The smallest simulated trade acts as the low-impact *reference* price;
-    larger trades are then scored for execution quality relative to it.
+    Returns ``(samples, attempted, succeeded)``.
+
+    The reference price is the effective price of the smallest simulated trade,
+    that is the trade with the lowest price impact in this run. Larger trades
+    are scored relative to it. The reference is reproducible because it is based
+    on actual token units and decimals for that market.
+
+    ``samples`` contains only successful simulations. ``attempted`` and
+    ``succeeded`` count the simulations that were attempted and returned
+    successfully, so failed simulations are not silently hidden.
     """
     from .analytics import scale_up
 
     base_reserve = market.base_reserve_human()
     if base_reserve <= 0:
-        return []
+        return [], 0, 0
 
+    attempted = 0
+    succeeded = 0
     metrics: list[ExecutionMetrics] = []
     for fraction in settings.trade_sizes:
         amount = base_reserve * fraction
         units = scale_up(amount, market.base.decimals)
         if units <= 0:
             continue
+        attempted += 1
         try:
             sim = await client.simulate_swap(
                 offer_address=market.base_address,
@@ -192,8 +203,11 @@ async def evaluate_market(
                 pool_address=market.pool.address,
             )
         except StonApiError as exc:
-            logger.warning("simulation failed for %s at %g%%: %s", market.name, fraction * 100, exc)
+            logger.warning(
+                "simulation failed for %s at %g%%: %s", market.name, fraction * 100, exc
+            )
             continue
+        succeeded += 1
 
         notional_usd = amount * market.base.price_usd
         metrics.append(
@@ -206,34 +220,70 @@ async def evaluate_market(
         )
 
     if not metrics:
-        return []
+        logger.warning("no successful simulations for %s (%d attempted)", market.name, attempted)
+        return [], attempted, succeeded
 
-    reference = min(m.effective_price for m in metrics if m.effective_price > 0)
+    smallest = min(metrics, key=lambda m: m.trade_size_base)
+    reference = smallest.effective_price
     for m in metrics:
         m.reference_price = reference
         m.execution_quality = (m.effective_price / reference) if reference else None
 
-    return [m.to_dict() for m in metrics]
+    return [m.to_dict() for m in metrics], attempted, succeeded
 
 
 async def evaluate_markets(
     client: StonApiClient,
     markets: list[Market],
     settings: Settings,
-) -> dict[str, list[dict]]:
+) -> tuple[dict[str, list[dict]], dict]:
+    """Evaluate every selected market and return ``(samples_by_market, stats)``.
+
+    ``stats`` distinguishes between markets selected, markets that produced at
+    least one successful simulation, and the number of simulations attempted,
+    successful and failed.
+    """
     results: dict[str, list[dict]] = {}
+    stats = {
+        "markets_selected": len(markets),
+        "markets_evaluated": 0,
+        "simulations_attempted": 0,
+        "simulations_successful": 0,
+        "simulations_failed": 0,
+    }
     for market in markets:
-        samples = await evaluate_market(client, market, settings)
-        if samples:
-            results[market.name] = samples
-            quality = sum(s["execution_quality"] or 1.0 for s in samples) / len(samples)
-            logger.info(
-                "evaluated %-28s %d trades, avg quality=%.4f",
-                market.name,
-                len(samples),
-                quality,
-            )
-    return results
+        samples, attempted, succeeded = await evaluate_market(client, market, settings)
+        stats["simulations_attempted"] += attempted
+        stats["simulations_successful"] += succeeded
+        stats["simulations_failed"] += attempted - succeeded
+        if not samples:
+            continue
+        stats["markets_evaluated"] += 1
+        results[market.name] = samples
+        quality = sum(s["execution_quality"] or 1.0 for s in samples) / len(samples)
+        logger.info(
+            "evaluated %-28s %d/%d trades, avg quality=%.4f",
+            market.name,
+            len(samples),
+            attempted,
+            quality,
+        )
+    logger.info(
+        "evaluation done: %d markets evaluated, %d/%d simulations ok",
+        stats["markets_evaluated"],
+        stats["simulations_successful"],
+        stats["simulations_attempted"],
+    )
+    return results, stats
+
+
+def samples_to_rows(results: dict[str, list[dict]], observed_at: str) -> list[dict]:
+    """Flatten per-market samples into storage rows tagged with a timestamp."""
+    rows: list[dict] = []
+    for samples in results.values():
+        for sample in samples:
+            rows.append({**sample, "observed_at": observed_at})
+    return rows
 ###############################################################################
 # Reporting
 ###############################################################################
@@ -246,12 +296,12 @@ def _summarise_pool_liquidity(pools: list[Pool]) -> dict:
     return {
         "num_pools": len(pools),
         "num_liquid_pools": len(liquid),
-        "total_tvl_usd": round(total_tvl, 2),
+        "total_liquidity_usd_est": round(total_tvl, 2),
         "total_volume_24h_usd": round(total_volume, 2),
         "largest_pools": [
             {
                 "address": p.address,
-                "tvl_usd": round(p.total_liquidity_usd(), 2),
+                "estimated_liquidity_usd": round(p.total_liquidity_usd(), 2),
                 "volume_24h_usd": round(p.volume_24h(), 2),
                 "lp_fee": p.lp_fee,
             }
@@ -267,7 +317,7 @@ async def run_pipeline(
     *,
     evaluate: bool = True,
 ) -> dict:
-    """Run a full collection + evaluation cycle and store results in ``db``."""
+    """Run a full collection and evaluation cycle and store results in ``db``."""
     observed_at = _now()
     assets, routers, pools = await collect_market_data(client, settings)
     store_market_data(db, observed_at, assets, routers, pools)
@@ -283,24 +333,32 @@ async def run_pipeline(
         "liquidity": _summarise_pool_liquidity(pools),
         "markets": {},
         "execution_samples": 0,
-        "markets_monitored": 0,
+        "markets_selected": 0,
+        "markets_evaluated": 0,
+        "simulations_attempted": 0,
+        "simulations_successful": 0,
+        "simulations_failed": 0,
     }
 
     if not evaluate:
         return report
 
     markets = choose_markets(pools, assets, settings)
-    results = await evaluate_markets(client, markets, settings)
+    results, eval_stats = await evaluate_markets(client, markets, settings)
 
-    rows: list[dict] = []
-    for market_name, samples in results.items():
-        report["markets"][market_name] = samples
-        for sample in samples:
-            rows.append({**sample, "observed_at": observed_at})
-
+    rows = samples_to_rows(results, observed_at)
     inserted = db.store_execution_samples(rows)
+    report["markets"] = results
     report["execution_samples"] = inserted
-    report["markets_monitored"] = len(markets)
+    report.update(eval_stats)
+
+    # Persist a compact summary so the API can report markets selected even when
+    # a market produced no successful simulations.
+    db.store_snapshot(
+        "run_summary",
+        observed_at,
+        {"generated_at": observed_at, **eval_stats},
+    )
     return report
 
 
@@ -329,20 +387,21 @@ def write_report(report: dict, settings: Settings, fmt: str = "json") -> Path:
 
 
 def _report_to_markdown(report: dict) -> str:
-    lines = ["# STON.fi Liquidity & Execution Intelligence - Market Report", ""]
+    lines = ["# STON.fi Liquidity & Execution Analytics - Market Report", ""]
     lines.append(f"- **Generated:** {report['generated_at']}")
-    disc = report.get("discovery", {})
-    lines.append(
-        f"- **Discovered:** {disc.get('assets', 0)} assets / "
-        f"{disc.get('pools', 0)} pools / {disc.get('routers', 0)} routers"
-    )
     liq = report.get("liquidity", {})
     lines.append(
-        f"- **Total tracked liquidity:** ${liq.get('total_tvl_usd', 0):,.2f} "
+        f"- **Estimated pool liquidity (LP supply value):** ${liq.get('total_liquidity_usd_est', 0):,.2f} "
         f"(24h volume ${liq.get('total_volume_24h_usd', 0):,.2f})"
     )
-    lines.append(f"- **Markets monitored:** {report.get('markets_monitored', 0)}")
-    lines.append(f"- **Execution samples:** {report.get('execution_samples', 0)}")
+    lines.append(f"- **Markets selected:** {report.get('markets_selected', 0)}")
+    lines.append(f"- **Markets evaluated:** {report.get('markets_evaluated', 0)}")
+    lines.append(
+        f"- **Simulations:** {report.get('simulations_attempted', 0)} attempted, "
+        f"{report.get('simulations_successful', 0)} successful, "
+        f"{report.get('simulations_failed', 0)} failed"
+    )
+    lines.append(f"- **Execution samples stored:** {report.get('execution_samples', 0)}")
     lines.append("")
 
     for market, samples in report.get("markets", {}).items():

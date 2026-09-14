@@ -40,6 +40,10 @@ def test_execution_metrics():
         price_impact="0.0005",
         fee_percent="0.003",
         fee_units="7500000",        # 0.0075 TON
+        min_ask_units="2400000000",
+        swap_rate="2.5",
+        slippage_tolerance="0.01",
+        gas_params={"forward_gas": "185000000", "estimated_gas_consumption": "45000000"},
     )
     m = execution_metrics(sim, offer, ask, reference_price=2.5, notional_usd=1.0)
     assert m.trade_size_base == 1.0
@@ -51,6 +55,16 @@ def test_execution_metrics():
     assert m.fee_amount_ask == 0.0075
     assert m.notional_usd == 1.0
     assert m.market == "JETTON/TON"
+    # raw inputs preserved for reproducibility
+    assert m.offer_units_raw == "1000000"
+    assert m.ask_units_raw == "2500000000"
+    assert m.offer_decimals == 6
+    assert m.ask_decimals == 9
+    assert m.min_ask_units == "2400000000"
+    assert m.swap_rate == 2.5
+    assert m.slippage_tolerance == 0.01
+    assert m.gas_forward == 185000000
+    assert m.gas_consumption == 45000000
 
 
 def test_execution_metrics_quality_below_one():
@@ -82,7 +96,7 @@ def test_liquidity_metrics_for_pool():
         ref_fee="2",
     )
     lm = liquidity_metrics(pool)
-    assert lm.tvl_usd == 1_000_000
+    assert lm.tvl_usd == 1_000_000  # direct pass-through of lp_total_supply_usd
     assert lm.volume_24h_usd == 250_000
     assert lm.lp_fee_bps == 7.0
     assert lm.protocol_fee_bps == 3.0

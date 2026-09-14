@@ -1,71 +1,123 @@
-# STON.fi Liquidity & Execution Intelligence Engine
+# STON.fi Liquidity & Execution Analytics
 
 [![CI](https://github.com/Pillar-5/Pillar5-GmbH-ston-liquidity-intelligence/actions/workflows/ci.yml/badge.svg)](https://github.com/Pillar-5/Pillar5-GmbH-ston-liquidity-intelligence/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-A **Python-based liquidity and execution intelligence engine** that connects to
-[STON.fi](https://ston.fi) market data and swap simulation to monitor liquidity,
-evaluate execution quality and identify actionable market conditions across TON.
-
-This is an MVP built natively against the **STON.fi public HTTP API**. Instead of
-recreating STON.fi's own infrastructure, the project layers an **analytics and
-execution-intelligence engine** on top of its assets, pools and swap-simulation
-primitives.
-
 ## What it does
 
-1. **Discovers** STON.fi assets, routers and pools
-2. **Retrieves** market and liquidity information for selected markets
-3. **Requests** simulated swap quotes across multiple trade sizes
-4. **Calculates** execution quality, effective execution price and price impact
-5. **Tracks** liquidity and market changes in a local database
-6. **Identifies** potentially attractive execution conditions
-7. **Exposes** the analytics through a REST API and lightweight dashboard
-8. **Reports** structured liquidity and execution findings (JSON / Markdown)
+This project collects market data from the STON.fi public HTTP API and uses the
+STON.fi swap simulation endpoint to measure execution conditions across selected
+TON markets. For each simulated trade it calculates the expected output, the
+effective execution price, the price impact and the estimated fee cost. Results
+are stored in SQLite and exposed through a REST API, a small dashboard and JSON
+or Markdown reports.
 
-A full run (`ston-liq run`) discovers assets/pools, selects the most liquid TON
-markets, simulates trades across sizes, stores everything in SQLite, and writes a
-report containing metrics such as total tracked liquidity (TVL) and 24h volume,
-number of monitored markets and execution samples, and per-market effective price,
-reference price, execution quality, price impact and fee cost (bps) for each
-simulated trade size.
+The project does not execute trades and does not claim to detect profitable
+arbitrage. Where two quoted prices differ, it reports a potential price
+difference after estimated execution costs, not a proven opportunity.
 
-## Architecture
+## Current status
+
+This is an early MVP. The current version:
+
+- connects to the STON.fi API and discovers assets, routers and pools
+- selects a small set of liquid TON markets by estimated pool liquidity
+- runs swap simulations at several trade sizes per market
+- stores snapshots and execution samples in SQLite
+- serves the results through a REST API and a dashboard
+
+Historical tracking over time, broader market coverage and additional execution
+analysis are planned for later stages.
+
+## How it works
 
 ```
-                 ┌──────────────────────── STON.fi HTTP API ────────────────────────┐
-                 │  /v1/assets   /v1/routers   /v1/pools   /v1/swap/simulate        │
-                 └───────────────────────────────┬──────────────────────────────────┘
-                                                 │  async HTTP (httpx, throttled,
-                                                 │  retried)
-                 ┌───────────────────────────────▼──────────────────────────────────┐
-                 │  client.StonApiClient                                             │
-                 │  models (Asset, Pool, Router, SwapSimulation)                     │
-                 └───────────────────────────────┬──────────────────────────────────┘
-                                                 │
-        ┌────────────────────────┬────────────────┴───────────────┬───────────────────────────┐
-        │                        │                                │                           │
-┌───────▼────────┐      ┌────────▼─────────┐            ┌─────────▼────────┐      ┌───────────▼────────┐
-│ pipeline       │      │ analytics        │            │ repository       │      │ api (FastAPI)      │
-│ choose_markets │      │ execution_metrics│            │ SQLite snapshots │      │ REST endpoints     │
-│ evaluate_market│      │ liquidity_metrics│            │ + execution      │      │ + dashboard (HTML) │
-│ run_pipeline   │      │ scale/format     │            │ samples          │      │ Chart.js           │
-└───────┬────────┘      └──────────────────┘            └─────────┬────────┘      └────────────────────┘
-        │                                                         │
-        └─────────────────── CLI (ston-liq) ──────────────────────┘
+STON.fi HTTP API
+    |
+    v
+market selection (pool liquidity filter)
+    |
+    v
+swap simulation (POST /v1/swap/simulate)
+    |
+    v
+execution analytics
+    |
+    v
+SQLite storage
+    |
+    v
+REST API + dashboard + reports
 ```
 
-- `client` – async, throttled, retrying client for the subset of STON.fi endpoints
-  the engine uses.
-- `models` – pydantic models mirroring the raw STON.fi API payloads.
-- `analytics` – effective execution price, price impact, fee/execution cost (bps)
-  and execution quality (price relative to a low-impact reference trade).
-- `pipeline` – discovers data, selects a liquid market universe, runs simulations
-  and orchestrates a full run.
-- `repository` – SQLite persistence for raw snapshots and execution samples.
-- `cli` – command-line interface for `run`, `collect`, `evaluate` and `serve`.
-- `api` – FastAPI REST layer plus the embedded dashboard.
+- `client`: async, throttled, retrying client for the STON.fi endpoints used.
+- `models`: pydantic models mirroring the raw STON.fi API payloads.
+- `analytics`: effective execution price, price impact, fee cost and execution
+  quality relative to a reference trade.
+- `pipeline`: discovers data, selects markets, runs simulations and orchestrates
+  a full run.
+- `repository`: SQLite persistence for raw snapshots and execution samples.
+- `cli`: command-line interface for `run`, `collect`, `evaluate` and `serve`.
+- `api`: FastAPI REST layer plus the embedded dashboard.
+
+## Metrics
+
+- **Effective execution price**: ask amount / offer amount (ask units per offer unit).
+- **Price impact**: reported by the STON.fi swap simulation (fraction). The
+  project uses the API value directly and does not recompute it.
+- **Reference price**: the effective execution price of the smallest simulated
+  trade size (a fraction of the base reserve, configurable via
+  `STONFI_TRADE_SIZES`). Because it is a small fraction of pool liquidity, its
+  price impact is small. It is used only as a comparison point.
+- **Execution quality**: effective price relative to the reference price. Below
+  `1.0` means the trade executes worse than the reference trade.
+- **Fee cost**: the simulation response fee fields are already in basis points.
+  The project reports the total fee percent and basis points plus the fee amount
+  in the ask token. The fee amount is not subtracted from the effective price
+  because the simulated ask output already reflects it, so there is no
+  double-counting.
+- **Estimated pool liquidity**: the pool's `lp_total_supply_usd` field from the
+  STON.fi API, which is the LP supply value in USD. This is a liquidity proxy,
+  not a canonical TVL. 24h volume comes from `volume_24h_usd`.
+
+## Example
+
+Real output from a run against the live STON.fi API (`ston-liq run
+--write-report md`), market USD₮/GRAM, six simulated trade sizes:
+
+| Trade size (GRAM) | Notional USD | Effective price | Ref price | Quality | Impact | Fee bps |
+|---|---:|---:|---:|---:|---:|---:|
+| 254.139 | $254.04 | 0.73917804 | 0.73917804 | 1.000000 | 0.0100% | 30.04 |
+| 2,541.39 | $2,540.37 | 0.73851477 | 0.73917804 | 0.999103 | 0.0997% | 30.06 |
+| 12,707 | $12,701.85 | 0.73558126 | 0.73917804 | 0.995134 | 0.4965% | 30.14 |
+| 25,413.9 | $25,403.71 | 0.73194698 | 0.73917804 | 0.990217 | 0.9881% | 30.24 |
+| 50,827.8 | $50,807.42 | 0.7247851 | 0.73917804 | 0.980528 | 1.9569% | 30.44 |
+| 127,070 | $127,018.54 | 0.7041164 | 0.73917804 | 0.952567 | 4.7528% | 31.04 |
+
+Larger trades execute at progressively worse effective prices relative to the
+reference trade, which is the expected behaviour for a constant-product pool.
+
+## STON.fi integration
+
+The project uses the official STON.fi HTTP API v1 (JavaScript client at
+[`@ston-fi/api`](https://github.com/ston-fi/api)). Python consumes the HTTP
+endpoints directly:
+
+- `GET  /v1/assets`: DEX asset discovery and USD reference prices
+- `GET  /v1/routers`: supported routers
+- `GET  /v1/pools`: pool reserves and liquidity info
+- `POST /v1/swap/simulate`: swap simulation used for execution analysis
+
+The simulation is called with the `units` parameter (the changelog of
+`@ston-fi/api` records the removal of `offer_units`). Router addresses used in
+simulations are taken from the `/v1/routers` response, not hardcoded.
+
+Because the official SDK is TypeScript, deeper contract-level interaction
+(Router/Pool on-chain calls or live execution) is kept outside the Python core
+and would be delegated to a small TypeScript service layer in a later phase.
+The MVP operates purely in analysis and simulation mode and performs no live
+trades. No v2 (`dexV2`) data is mixed into the v1 endpoints used here.
 
 ## Requirements
 
@@ -138,7 +190,7 @@ auto-loaded if present). See [.env.example](.env.example).
 | `STONFI_TIMEOUT_SECONDS`       | `30.0`                               | HTTP request timeout                     |
 | `STONFI_MAX_CONCURRENCY`       | `8`                                  | Max parallel API requests                |
 | `STONFI_MAX_RETRIES`           | `2`                                  | Retries for transient HTTP errors        |
-| `STONFI_MIN_POOL_TVL_USD`      | `50000`                              | Keep pools with at least this TVL (USD)  |
+| `STONFI_MIN_POOL_TVL_USD`      | `50000`                              | Minimum pool liquidity (USD proxy)       |
 | `STONFI_MAX_POOLS`             | `12`                                 | Cap on selected liquid markets           |
 | `STONFI_TRADE_SIZES`           | `0.0001,0.001,0.005,0.01,0.02,0.05`  | Fractions of base reserve to simulate    |
 | `STONFI_SLIPPAGE_TOLERANCE`    | `0.01`                               | Slippage tolerance for simulations       |
@@ -160,33 +212,6 @@ Example:
 curl "http://127.0.0.1:8000/api/markets"
 curl "http://127.0.0.1:8000/api/execution?market=USDT/GRAM"
 ```
-
-## Metrics
-
-- **Effective execution price** – ask amount / offer amount (ask units per offer unit).
-- **Price impact** – reported by the STON.fi swap simulation (fraction).
-- **Reference price** – effective price of the smallest simulated trade (low-impact).
-- **Execution quality** – effective price relative to the reference price; below
-  `1.0` means the trade executes worse than the low-impact reference.
-- **Fee / execution cost** – total fee percent and basis points, plus fee amount in
-  the ask token.
-- **Liquidity** – pool TVL (`lp_total_supply_usd`) and 24h volume.
-
-## STON.fi integration details
-
-The engine integrates with the official STON.fi HTTP API (JavaScript client at
-[`@ston-fi/api`](https://github.com/ston-fi/api)); Python consumes the underlying
-HTTP endpoints directly:
-
-- `GET  /v1/assets` – DEX asset discovery and USD reference prices
-- `GET  /v1/routers` – supported routers
-- `GET  /v1/pools` – pool reserves and liquidity info
-- `POST /v1/swap/simulate` – swap simulation (used for execution analysis)
-
-Because the official SDK is TypeScript, deeper contract-level interaction (e.g.
-Router/Pool on-chain calls or live execution) is kept outside the Python core and
-would be delegated to a small TypeScript service layer in a later phase. The MVP
-operates purely in **analysis / simulation mode** and performs no live trades.
 
 ## Project structure
 
@@ -216,14 +241,26 @@ pip install -e ".[dev,api]"
 pytest
 ```
 
-## Roadmap alignment
+## Limitations
 
-This repository currently ships **Phase 1 + part of Phase 2** of the proposal
-("STON.fi Liquidity & Execution Intelligence Engine"): a working
-`STON.fi API → Python → retrieve assets/pools → store data → produce a first
-liquidity report` MVP, plus a REST API and dashboard. Later phases add continuous
-scheduled collection, deeper analytics, opportunity detection and (eventually) an
-execution interface.
+- Analysis and simulation only. The system does not execute trades.
+- Market coverage is a small liquidity-filtered set of pools per run. It is not a
+  full snapshot of STON.fi markets.
+- Execution metrics come from simulations at the configured trade sizes. They are
+  estimates, not guaranteed execution outcomes.
+- Historical tracking exists in SQLite, but there is no scheduled continuous
+  collection yet.
+- Price differences between quoted prices are reported as potential differences
+  after estimated execution costs. Executable profitability is not established.
+
+## Planned work
+
+- Scheduled continuous collection and historical tracking over time
+- Broader market coverage and configurable market universes
+- Reference-price comparisons and execution-cost filtering for price differences
+- A small TypeScript service layer for contract-level STON.fi interaction where
+  the Python core is not sufficient
+- More validation of simulation results against observed on-chain conditions
 
 ## License
 

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ston-liquidity-intelligence"
 version = "0.1.0"
-description = "STON.fi Liquidity & Execution Intelligence Engine - monitor liquidity, evaluate execution quality and identify actionable market conditions across TON."
+description = "STON.fi Liquidity & Execution Analytics - collects STON.fi market data and swap simulations to measure liquidity, price impact and expected execution across TON markets."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

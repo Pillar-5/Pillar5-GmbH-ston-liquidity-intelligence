@@ -1,8 +1,8 @@
-"""Command-line interface for the STON.fi intelligence engine.
+"""Command-line interface for the STON.fi analytics project.
 
 Usage examples
 --------------
-python -m ston_liquidity_intelligence run            # collect + evaluate + report
+python -m ston_liquidity_intelligence run            # collect + simulate + report
 python -m ston_liquidity_intelligence collect        # discovery only (store snapshots)
 python -m ston_liquidity_intelligence evaluate       # simulation only (from disk DB)
 python -m ston_liquidity_intelligence serve [--port] # REST API + dashboard
@@ -49,9 +49,11 @@ async def _cmd_run(args: argparse.Namespace) -> int:
             path = write_report(report, settings, fmt=fmt)
             logger.info("report written to %s", path)
         logger.info(
-            "run complete: %d markets, %d execution samples",
-            report.get("markets_monitored", 0),
-            report.get("execution_samples", 0),
+            "run complete: %d markets evaluated, %d/%d simulations ok, %s",
+            report.get("markets_evaluated", 0),
+            report.get("simulations_successful", 0),
+            report.get("simulations_attempted", 0),
+            "%d samples stored" % report.get("execution_samples", 0),
         )
     finally:
         await client.aclose()
@@ -61,7 +63,9 @@ async def _cmd_run(args: argparse.Namespace) -> int:
 
 async def _cmd_evaluate(args: argparse.Namespace) -> int:
     """Re-run simulations using the latest stored snapshot (no new collection)."""
-    from .pipeline import choose_markets, evaluate_markets, _summarise_pool_liquidity
+    import datetime as _dt
+
+    from .pipeline import samples_to_rows, choose_markets, evaluate_markets
     from .models import Asset, Pool
 
     settings = Settings.from_env()
@@ -78,18 +82,20 @@ async def _cmd_evaluate(args: argparse.Namespace) -> int:
             max_concurrency=settings.max_concurrency,
         )
         try:
-            results = await evaluate_markets(client, markets, settings)
+            results, stats = await evaluate_markets(client, markets, settings)
         finally:
             await client.aclose()
-        rows = []
-        import datetime as _dt
 
         observed_at = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        for market, samples in results.items():
-            for s in samples:
-                rows.append({**s, "observed_at": observed_at})
-        n = db.store_execution_samples(rows)
-        logger.info("stored %d new execution samples across %d markets", n, len(results))
+        n = db.store_execution_samples(samples_to_rows(results, observed_at))
+        db.store_snapshot("run_summary", observed_at, {"generated_at": observed_at, **stats})
+        logger.info(
+            "stored %d new execution samples across %d/%d markets (%d sims failed)",
+            n,
+            stats["markets_evaluated"],
+            stats["markets_selected"],
+            stats["simulations_failed"],
+        )
     return 0
 
 
@@ -127,8 +133,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ston-liq",
         description=(
-            "STON.fi Liquidity & Execution Intelligence Engine - monitor "
-            "liquidity, evaluate execution quality and identify market conditions."
+            "STON.fi Liquidity & Execution Analytics. Collects STON.fi market "
+            "data and swap simulations to measure liquidity and execution "
+            "conditions across TON markets."
         ),
     )
     parser.add_argument("--version", action="version", version="ston-liq 0.1.0")

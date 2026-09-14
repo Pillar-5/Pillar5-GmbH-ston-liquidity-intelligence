@@ -58,6 +58,17 @@ class Repository:
                 direction      TEXT NOT NULL,
                 offer_address  TEXT NOT NULL,
                 ask_address    TEXT NOT NULL,
+                offer_units_raw TEXT,
+                ask_units_raw  TEXT,
+                offer_decimals INTEGER,
+                ask_decimals   INTEGER,
+                min_ask_units  TEXT,
+                swap_rate      REAL,
+                slippage_tolerance REAL,
+                fee_units_raw  TEXT,
+                fee_address    TEXT,
+                gas_forward    REAL,
+                gas_consumption REAL,
                 trade_size_base REAL,
                 notional_usd   REAL,
                 offer_amount   REAL,
@@ -84,6 +95,32 @@ class Repository:
             ON execution_samples (market, observed_at)
             """
         )
+        self._conn.commit()
+        self._migrate_samples()
+
+    def _migrate_samples(self) -> None:
+        """Add any columns introduced after the initial schema creation.
+
+        This keeps older databases usable when the schema evolves, so a fresh
+        clone does not need to start over.
+        """
+        cols = {
+            "offer_units_raw": "TEXT",
+            "ask_units_raw": "TEXT",
+            "offer_decimals": "INTEGER",
+            "ask_decimals": "INTEGER",
+            "min_ask_units": "TEXT",
+            "swap_rate": "REAL",
+            "slippage_tolerance": "REAL",
+            "fee_units_raw": "TEXT",
+            "fee_address": "TEXT",
+            "gas_forward": "REAL",
+            "gas_consumption": "REAL",
+        }
+        existing = {row[1] for row in self._conn.execute("PRAGMA table_info(execution_samples)")}
+        for name, decl in cols.items():
+            if name not in existing:
+                self._conn.execute(f"ALTER TABLE execution_samples ADD COLUMN {name} {decl}")
         self._conn.commit()
 
     # --------------------------------------------------------------- snapshots
@@ -117,6 +154,17 @@ class Repository:
                     s.get("direction"),
                     s.get("offer_address"),
                     s.get("ask_address"),
+                    s.get("offer_units_raw"),
+                    s.get("ask_units_raw"),
+                    s.get("offer_decimals"),
+                    s.get("ask_decimals"),
+                    s.get("min_ask_units"),
+                    s.get("swap_rate"),
+                    s.get("slippage_tolerance"),
+                    s.get("fee_units_raw"),
+                    s.get("fee_address"),
+                    s.get("gas_forward"),
+                    s.get("gas_consumption"),
                     s.get("trade_size_base"),
                     s.get("notional_usd"),
                     s.get("offer_amount"),
@@ -137,10 +185,13 @@ class Repository:
                 """
                 INSERT INTO execution_samples (
                     observed_at, market, pool_address, direction, offer_address,
-                    ask_address, trade_size_base, notional_usd, offer_amount,
-                    ask_amount, effective_price, reference_price, execution_quality,
+                    ask_address, offer_units_raw, ask_units_raw, offer_decimals,
+                    ask_decimals, min_ask_units, swap_rate, slippage_tolerance,
+                    fee_units_raw, fee_address, gas_forward, gas_consumption,
+                    trade_size_base, notional_usd, offer_amount, ask_amount,
+                    effective_price, reference_price, execution_quality,
                     price_impact, fee_percent, fee_bps, fee_amount_ask
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 values,
             )

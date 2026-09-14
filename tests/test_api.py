@@ -56,8 +56,9 @@ def test_health_and_summary(tmp_path):
     assert client.get("/health").json()["status"] == "ok"
     summary = client.get("/api/summary").json()
     assert summary["discovery"]["pools"] == 1
-    assert summary["liquidity"]["total_tvl_usd"] == 100000.0
-    assert summary["markets_monitored"] == 1
+    assert summary["liquidity"]["total_liquidity_usd_est"] == 100000.0
+    assert summary["markets_evaluated"] == 1
+    assert summary["markets_selected"] == 1
     assert summary["execution_samples"] == 1
 
 

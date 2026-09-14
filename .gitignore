@@ -30,6 +30,7 @@ reports/*.md
 
 # Scratch / temporary
 .tmp/
+*.log
 .DS_Store
 Thumbs.db
 

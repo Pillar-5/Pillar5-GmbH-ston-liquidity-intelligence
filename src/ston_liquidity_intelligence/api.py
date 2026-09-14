@@ -24,7 +24,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
-<title>STON.fi Execution Intelligence</title>
+<title>STON.fi Liquidity &amp; Execution Analytics</title>
 <style>
   :root { --fg:#e6edf3; --muted:#9ba7b0; --bg:#0d1117; --card:#161b22; --acc:#238636; }
   * { box-sizing:border-box; }
@@ -45,7 +45,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 </style>
 </head>
 <body>
-<header><h1>STON.fi Liquidity &amp; Execution Intelligence</h1>
+<header><h1>STON.fi Liquidity &amp; Execution Analytics</h1>
 <p>Execution quality across monitored TON markets &middot; data: live STON.fi API</p></header>
 <main>
   <section class="cards" id="summary"></section>
@@ -66,10 +66,10 @@ async function load(){
   const m = await (await fetch("/api/markets")).json();
   const summary = await (await fetch("/api/summary")).json();
   document.getElementById("summary").innerHTML = [
-    ["Assets", summary.discovery?.assets ?? 0],
-    ["Pools", summary.discovery?.pools ?? 0],
-    ["Tracked TVL", fmt.format(summary.liquidity?.total_tvl_usd ?? 0)],
-    ["Markets", summary.markets_monitored ?? 0],
+    ["Markets selected", summary.markets_selected ?? 0],
+    ["Markets evaluated", summary.markets_evaluated ?? 0],
+    ["Simulations", (summary.simulations_successful ?? 0) + " ok / " + (summary.simulations_failed ?? 0) + " failed"],
+    ["Estimated liquidity", fmt.format(summary.liquidity?.total_liquidity_usd_est ?? 0)],
     ["Execution samples", summary.execution_samples ?? 0],
   ].map(([k,v])=>`<div class="card"><h3>${k}</h3><div class="value">${v}</div></div>`).join("");
   const tb = document.querySelector("#markets tbody");
@@ -125,9 +125,9 @@ def _markets_view(db: Repository) -> list[dict]:
 
 def create_app(settings: Settings) -> FastAPI:
     app = FastAPI(
-        title="STON.fi Liquidity & Execution Intelligence",
+        title="STON.fi Liquidity & Execution Analytics",
         version="0.1.0",
-        description="REST API for the STON.fi execution intelligence engine.",
+        description="REST API for STON.fi liquidity and execution analytics.",
     )
     db = Repository(settings.db_path)
 
@@ -146,6 +146,8 @@ def create_app(settings: Settings) -> FastAPI:
         pools = _latest("pools")
         liq = [p for p in pools if not p.get("deprecated", False)]
         views = _markets_view(db)
+        run: dict = db.latest_snapshot("run_summary") or {}
+        markets_evaluated = run.get("markets_evaluated") or len(views)
         return {
             "discovery": {
                 "assets": len(_latest("assets")),
@@ -153,12 +155,16 @@ def create_app(settings: Settings) -> FastAPI:
                 "pools": len(pools),
             },
             "liquidity": {
-                "total_tvl_usd": round(sum(float(p.get("lp_total_supply_usd") or 0) for p in liq), 2),
+                "total_liquidity_usd_est": round(sum(float(p.get("lp_total_supply_usd") or 0) for p in liq), 2),
                 "total_volume_24h_usd": round(sum(float(p.get("volume_24h_usd") or 0) for p in liq), 2),
                 "liquid_pools": len(liq),
             },
             "markets": views,
-            "markets_monitored": len(views),
+            "markets_selected": run.get("markets_selected") or markets_evaluated,
+            "markets_evaluated": markets_evaluated,
+            "simulations_attempted": run.get("simulations_attempted", 0),
+            "simulations_successful": run.get("simulations_successful", 0),
+            "simulations_failed": run.get("simulations_failed", 0),
             "execution_samples": len(db.execution_samples(limit=100000)),
         }
 
