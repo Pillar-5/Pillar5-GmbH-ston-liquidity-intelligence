@@ -103,6 +103,7 @@ class StonApiClient:
                     detail = f"{method} {path} -> HTTP {resp.status_code}: {resp.text[:300]}"
                     if resp.status_code in retryable and attempt < self._max_retries:
                         retry_reason = detail
+                        last_exc = StonApiError(detail)
                     else:
                         raise StonApiError(detail)
                 else:
@@ -139,7 +140,7 @@ class StonApiClient:
 
         By default only the legacy v1 routers are requested. STON.fi's API does
         not return a single dataset for both DEX generations, so this project
-        targets the v1 constant-product infrastructure explicitly and passes
+        targets the STON.fi DEX v1 infrastructure explicitly and passes
         ``dex_v2=false``. Setting ``dex_v2=True`` switches to the combined
         (v1 + v2) list.
         """

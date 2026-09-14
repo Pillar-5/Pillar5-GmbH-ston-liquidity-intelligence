@@ -73,10 +73,11 @@ REST API + dashboard + reports
   price impact is small. It is used only as a comparison point.
 - **Execution quality**: effective price relative to the reference price. Below
   `1.0` means the trade executes worse than the reference trade.
-- **Fee cost**: the simulation response fee fields are already in basis points.
-  The project reports the total fee percent and basis points plus the fee amount
-  in the ask token. The fee amount is not subtracted from the effective price
-  because the simulated ask output already reflects it, so there is no
+- **Fee cost**: the simulation returns the fee percentage as a fraction. The
+  project reports that value as both a percentage and basis points by
+  multiplying the fraction by 10,000, and converts the fee amount to ask-token
+  units. The fee is not subtracted from the effective price because the
+  simulated ask amount already reflects the execution result, so there is no
   double-counting.
 - **Estimated pool liquidity**: the pool's `lp_total_supply_usd` field from the
   STON.fi API, which is the LP supply value in USD. This is a liquidity proxy,
@@ -111,8 +112,9 @@ endpoints directly:
 - `POST /v1/swap/simulate`: swap simulation used for execution analysis
 
 The simulation is called with the `units` parameter (the changelog of
-`@ston-fi/api` records the removal of `offer_units`). Router addresses used in
-simulations are taken from the `/v1/routers` response, not hardcoded.
+`@ston-fi/api` records the removal of `offer_units`). Router metadata is
+collected from `/v1/routers` and stored with the market data. Simulations are
+tied to the selected pool using its `pool_address`.
 
 Because the official SDK is TypeScript, deeper contract-level interaction
 (Router/Pool on-chain calls or live execution) is kept outside the Python core
